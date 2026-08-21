@@ -2,11 +2,8 @@ import asyncio
 import json
 import random
 import os
-import http.server
-import socketserver
 import websockets
 import string
-import socket
 
 # Struktur data per lobi (Rooms)
 rooms = {}
@@ -25,16 +22,6 @@ OBSTACLES = [
     {"x1": 150, "y1": 650, "x2": 250, "y2": 650},
     {"x1": 950, "y1": 150, "x2": 1050, "y2": 150},
 ]
-
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except:
-        return "127.0.0.1"
 
 def check_line_collision(x, y, radius, line):
     x1, y1, x2, y2 = line["x1"], line["y1"], line["x2"], line["y2"]
@@ -349,23 +336,10 @@ async def game_loop():
             
         await asyncio.sleep(0.03)
 
-def run_http_server():
-    os.chdir("static")
-    handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("0.0.0.0", 8080), handler) as httpd:
-        local_ip = get_local_ip()
-        print(f"[HTTP] Web Server berjalan di:")
-        print(f"       -> Local:   http://localhost:8080")
-        print(f"       -> Network: http://{local_ip}:8080")
-        httpd.serve_forever()
-
 async def main():
-    import threading
-    http_thread = threading.Thread(target=run_http_server, daemon=True)
-    http_thread.start()
-
-    async with websockets.serve(game_handler, "0.0.0.0", 8765):
-        print("[WS] WebSocket Server aktif di port 8765 (Multi-Room)")
+    port = int(os.environ.get("PORT", 8765))
+    async with websockets.serve(game_handler, "0.0.0.0", port):
+        print(f"[WS] WebSocket Server aktif di port {port} (Multi-Room)")
         await game_loop()
 
 if __name__ == "__main__":

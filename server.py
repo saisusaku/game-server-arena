@@ -351,7 +351,7 @@ async def game_loop():
                                 p["bot_target_x"] = random.randint(150, 1050)
                                 p["bot_target_y"] = random.randint(150, 650)
 
-                        # Pergerakan mulus bot menuju target
+                        # Pergerakan mulus bot menuju target dengan dukungan sliding dinding
                         dx = p["bot_target_x"] - p["x"]
                         dy = p["bot_target_y"] - p["y"]
                         dist = (dx**2 + dy**2)**0.5
@@ -367,11 +367,23 @@ async def game_loop():
                                 if check_line_collision(next_x, next_y, 18, obs):
                                     hit = True
                                     break
+                            
                             if not hit:
                                 p["x"] = next_x
                                 p["y"] = next_y
                             else:
-                                # Cari jalur alternatif jika menabrak rintangan
+                                # Terapkan uji sumbu terpisah agar bot bisa sliding (geser) di sepanjang dinding/rintangan
+                                test_x = next_x
+                                test_y = p["y"]
+                                if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
+                                    p["x"] = test_x
+                                
+                                test_x = p["x"]
+                                test_y = next_y
+                                if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
+                                    p["y"] = test_y
+                                    
+                                # Cari jalur alternatif jika benar-benar terhalang
                                 p["bot_target_x"] = random.randint(150, 1050)
                                 p["bot_target_y"] = random.randint(150, 650)
                             

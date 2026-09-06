@@ -76,7 +76,8 @@ def create_new_room():
         "game_started": False,
         "game_over": False,
         "winner": "",
-        "connected_webs": set()
+        "connected_webs": set(),
+        "use_bots": False  # Status apakah lobi ini mengaktifkan bot
     }
     return code
 
@@ -111,7 +112,8 @@ async def game_handler(websocket):
                         room_list.append({
                             "id": r_code,
                             "name": f"Lobi ({r_code})",
-                            "playersCount": p_count
+                            "playersCount": p_count,
+                            "use_bots": r_data["use_bots"]
                         })
                 await websocket.send(json.dumps({
                     "type": "room_list",
@@ -177,7 +179,13 @@ async def game_handler(websocket):
             
             room = rooms[current_room_code]
 
-            # Fitur Chat Lobi
+            # Toggle opsi bot oleh host
+            if msg_type == "toggle_bots":
+                first_player_id = next((pid for pid, p in room["clients"].items() if p["role"] == "player"), None)
+                if player_id == first_player_id or room["clients"].get(player_id, {}).get("role") == "admin":
+                    room["use_bots"] = data.get("use_bots", False)
+                continue
+
             if msg_type == "chat_message":
                 if player_id in room["clients"]:
                     sender_name = room["clients"][player_id]["name"]
@@ -199,11 +207,14 @@ async def game_handler(websocket):
 
                     if is_admin or is_host_player:
                         total_players = sum(1 for p in room["clients"].values() if p["role"] == "player")
-                        if total_players >= 2:
+                        if total_players >= 1 or room["use_bots"]:
                             room["game_started"] = True
                             room["game_over"] = False
                             room["winner"] = ""
                             room["bullets"].clear()
+                            
+                            # Hapus bot lama jika ada, lalu generate ulang jika opsi bot aktif
+                            room["clients"] = {pid: p for pid, p in room["clients"].items() if not p.get("is_bot")}
                             
                             current_time = asyncio.get_running_loop().time()
                             for pid, p in room["clients"].items():
@@ -215,9 +226,30 @@ async def game_handler(websocket):
                                     p["kills"] = 0
                                     p["invulnerable_until"] = current_time + 3.0
 
+                            # Tambahkan 2 Bot jika opsi bot diaktifkan oleh host
+                            if room["use_bots"]:
+                                for i in range(2):
+                                    bot_id = f"bot_{i}_{random.randint(1000,9999)}"
+                                    bx, by = get_random_safe_spawn()
+                                    room["clients"][bot_id] = {
+                                        "name": f"AI Bot {i+1}",
+                                        "x": bx, "y": by,
+                                        "angle": 0,
+                                        "direction": "up",
+                                        "color": "#ef4444",
+                                        "lives": 5,
+                                        "kills": 0,
+                                        "role": "player",
+                                        "is_bot": True,
+                                        "bot_target_x": bx,
+                                        "bot_target_y": by,
+                                        "bot_timer": 0,
+                                        "invulnerable_until": current_time + 3.0
+                                    }
+
             elif msg_type == "update" and player_id in room["clients"]:
                 p = room["clients"][player_id]
-                if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player":
+                if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player" and not p.get("is_bot"):
                     target_x, target_y = data.get("x", p["x"]), data.get("y", p["y"])
                     current_x, current_y = p["x"], p["y"]
                     
@@ -275,6 +307,7 @@ async def game_handler(websocket):
                 room["game_over"] = False
                 room["winner"] = ""
                 room["bullets"].clear()
+                room["clients"] = {pid: p for pid, p in room["clients"].items() if not p.get("is_bot")}
                 for pid, p in room["clients"].items():
                     p["lives"] = 5
                     p["kills"] = 0
@@ -300,6 +333,70 @@ async def game_loop():
 
         for r_code, room in list(rooms.items()):
             if room["game_started"] and not room["game_over"]:
+                # --- Logika AI Bot ---
+                for pid, p in room["clients"].items():
+                    if p.get("is_bot") and p["lives"] > 0:
+                        p["bot_timer"] = p.get("bot_timer", 0) - 1
+                        if p["bot_timer"] <= 0:
+                            p["bot_timer"] = random.randint(40, 90)
+                            # Cari target pemain manusia terdekat
+                            targets = [cp for cpid, cp in room["clients"].items() if cp["role"] == "player" and not cp.get("is_bot") and cp["lives"] > 0]
+                            if targets:
+                                chosen = random.choice(targets)
+                                p["bot_target_x"] = chosen["x"] + random.randint(-40, 40)
+                                p["bot_target_y"] = chosen["y"] + random.randint(-40, 40)
+                            else:
+                                p["bot_target_x"] = random.randint(150, 1050)
+                                p["bot_target_y"] = random.randint(150, 650)
+
+                        # Gerakkan bot menuju target
+                        dx = p["bot_target_x"] - p["x"]
+                        dy = p["bot_target_y"] - p["y"]
+                        dist = (dx**2 + dy**2)**0.5
+                        
+                        if dist > 10:
+                            vx = (dx / dist) * 3.5
+                            vy = (dy / dist) * 3.5
+                            next_x = p["x"] + vx
+                            next_y = p["y"] + vy
+                            
+                            hit = False
+                            for obs in OBSTACLES:
+                                if check_line_collision(next_x, next_y, 18, obs):
+                                    hit = True
+                                    break
+                            if not hit:
+                                p["x"] = next_x
+                                p["y"] = next_y
+                            
+                            if abs(dx) > abs(dy):
+                                p["direction"] = 'right' if dx > 0 else 'left'
+                                p["angle"] = 0 if dx > 0 else Math.PI if 'Math' in globals() else 3.14
+                            else:
+                                p["direction"] = 'down' if dy > 0 else 'up'
+                                p["angle"] = 1.57 if dy > 0 else -1.57
+
+                        # Bot menembak secara berkala jika dekat dengan pemain
+                        if random.randint(1, 40) == 1:
+                            targets = [cp for cpid, cp in room["clients"].items() if cp["role"] == "player" and not cp.get("is_bot") and cp["lives"] > 0]
+                            if targets:
+                                target = targets[0]
+                                bdx = target["x"] - p["x"]
+                                bdy = target["y"] - p["y"]
+                                bdist = (bdx**2 + bdy**2)**0.5
+                                if bdist > 0 and bdist < 400:
+                                    ndx = bdx / bdist
+                                    ndy = bdy / bdist
+                                    room["bullets"].append({
+                                        "x": p["x"] + ndx * 20,
+                                        "y": p["y"] + ndy * 20,
+                                        "dx": ndx, "dy": ndy,
+                                        "owner": pid,
+                                        "owner_id": pid,
+                                        "distance_traveled": 0
+                                    })
+
+                # --- Update Peluru ---
                 for b in room["bullets"][:]:
                     prev_x, prev_y = b["x"], b["y"]
                     
@@ -338,11 +435,11 @@ async def game_loop():
                         
                     hit = False
                     for pid, p in room["clients"].items():
-                        if p["role"] == "player" and p["lives"] > 0 and pid != b.get("owner"):
+                        if p["lives"] > 0 and pid != b.get("owner"):
                             if current_time < p.get("invulnerable_until", 0):
                                 continue
 
-                            dist = ((b["x"] - p["x"])**2 + (b["y"] - p["y"])**2)**0.5
+                            dist = ((b["x"] - p["x"])**2 + ((b["y"] - p["y"]))**2)**0.5
                             if dist < 18:
                                 p["lives"] -= 1
                                 hit = True
@@ -382,7 +479,8 @@ async def game_loop():
                     "winner": room["winner"],
                     "clients": export_clients,
                     "bullets": room["bullets"],
-                    "obstacles": OBSTACLES
+                    "obstacles": OBSTACLES,
+                    "use_bots": room["use_bots"]
                 })
                 
                 for ws in list(room["connected_webs"]):

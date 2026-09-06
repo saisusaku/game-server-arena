@@ -2,8 +2,12 @@ import asyncio
 import json
 import random
 import os
+import http.server
+import socketserver
 import websockets
 import string
+import socket
+import threading
 
 # Struktur data per lobi (Rooms)
 rooms = {}
@@ -22,6 +26,16 @@ OBSTACLES = [
     {"x1": 150, "y1": 650, "x2": 250, "y2": 650},
     {"x1": 950, "y1": 150, "x2": 1050, "y2": 150},
 ]
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
 
 def check_line_collision(x, y, radius, line):
     x1, y1, x2, y2 = line["x1"], line["y1"], line["x2"], line["y2"]
@@ -112,6 +126,7 @@ async def game_handler(websocket):
                     "name": name,
                     "x": spawn_x, "y": spawn_y,
                     "angle": 0,
+                    "direction": "up",
                     "color": color,
                     "lives": 5,
                     "kills": 0,
@@ -136,6 +151,7 @@ async def game_handler(websocket):
                         "name": name,
                         "x": spawn_x, "y": spawn_y,
                         "angle": 0,
+                        "direction": "up",
                         "color": color,
                         "lives": 5,
                         "kills": 0,
@@ -209,6 +225,7 @@ async def game_handler(websocket):
                             p["y"] = test_y
 
                     p["angle"] = data.get("angle", 0)
+                    p["direction"] = data.get("direction", p.get("direction", "up"))
                 
             elif msg_type == "shoot" and player_id in room["clients"]:
                 p = room["clients"][player_id]
@@ -226,6 +243,7 @@ async def game_handler(websocket):
                             "x": sx, "y": sy,
                             "dx": data.get("dx", 0), "dy": data.get("dy", 0),
                             "owner": player_id,
+                            "owner_id": player_id,
                             "distance_traveled": 0
                         })
             
@@ -250,7 +268,7 @@ async def game_handler(websocket):
             if player_id in room["clients"]:
                 del room["clients"][player_id]
             
-            if not room["clients"] or not any(p["role"] == "admin" for p in room["clients"].values()):
+            if not room["clients"]:
                 del rooms[current_room_code]
 
 async def game_loop():
@@ -261,28 +279,43 @@ async def game_loop():
             if room["game_started"] and not room["game_over"]:
                 for b in room["bullets"][:]:
                     prev_x, prev_y = b["x"], b["y"]
-                    b["x"] += b["dx"] * 9
-                    b["y"] += b["dy"] * 9
+                    
+                    speed_multiplier = 25
+                    target_bullet_x = b["x"] + b["dx"] * speed_multiplier
+                    target_bullet_y = b["y"] + b["dy"] * speed_multiplier
+                    
+                    sub_steps = 5
+                    sub_dx = (target_bullet_x - prev_x) / sub_steps
+                    sub_dy = (target_bullet_y - prev_y) / sub_steps
+                    
+                    hit_obstacle = False
+                    current_sim_x = prev_x
+                    current_sim_y = prev_y
+                    
+                    for _ in range(sub_steps):
+                        current_sim_x += sub_dx
+                        current_sim_y += sub_dy
+                        
+                        for obs in OBSTACLES:
+                            if check_line_collision(current_sim_x, current_sim_y, 4, obs):
+                                hit_obstacle = True
+                                break
+                        if hit_obstacle:
+                            break
+                    
+                    b["x"] = current_sim_x
+                    b["y"] = current_sim_y
                     
                     step_dist = ((b["x"] - prev_x)**2 + (b["y"] - prev_y)**2)**0.5
                     b["distance_traveled"] = b.get("distance_traveled", 0) + step_dist
                     
-                    if b["distance_traveled"] > 250 or not (0 <= b["x"] <= 1200 and 0 <= b["y"] <= 800):
-                        room["bullets"].remove(b)
-                        continue
-                        
-                    hit_obstacle = False
-                    for obs in OBSTACLES:
-                        if check_line_collision(b["x"], b["y"], 4, obs):
-                            hit_obstacle = True
-                            break
-                    if hit_obstacle:
+                    if hit_obstacle or b["distance_traveled"] > 200 or not (0 <= b["x"] <= 1200 and 0 <= b["y"] <= 800):
                         room["bullets"].remove(b)
                         continue
                         
                     hit = False
                     for pid, p in room["clients"].items():
-                        if p["role"] == "player" and p["lives"] > 0 and pid != b["owner"]:
+                        if p["role"] == "player" and p["lives"] > 0 and pid != b.get("owner"):
                             if current_time < p.get("invulnerable_until", 0):
                                 continue
 
@@ -291,8 +324,9 @@ async def game_loop():
                                 p["lives"] -= 1
                                 hit = True
                                 
-                                if b["owner"] in room["clients"]:
-                                    room["clients"][b["owner"]]["kills"] += 1
+                                owner_key = b.get("owner")
+                                if owner_key in room["clients"]:
+                                    room["clients"][owner_key]["kills"] += 1
                                 
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
@@ -336,8 +370,24 @@ async def game_loop():
             
         await asyncio.sleep(0.03)
 
+def run_http_server():
+    if os.path.exists("static"):
+        os.chdir("static")
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("0.0.0.0", 8080), handler) as httpd:
+        local_ip = get_local_ip()
+        print(f"[HTTP] Web Server berjalan di:")
+        print(f"       -> Local:   http://localhost:8080")
+        print(f"       -> Network: http://{local_ip}:8080")
+        httpd.serve_forever()
+
 async def main():
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+
+    # Mendukung port dinamis dari Render (atau default ke 8765 jika di lokal)
     port = int(os.environ.get("PORT", 8765))
+
     async with websockets.serve(game_handler, "0.0.0.0", port):
         print(f"[WS] WebSocket Server aktif di port {port} (Multi-Room)")
         await game_loop()

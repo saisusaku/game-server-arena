@@ -287,8 +287,13 @@ async def game_handler(websocket):
             elif msg_type == "shoot" and player_id in room["clients"]:
                 p = room["clients"][player_id]
                 if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player":
-                    sx = data.get("x", p["x"])
-                    sy = data.get("y", p["y"])
+                    dx = data.get("dx", 0)
+                    dy = data.get("dy", 0)
+                    
+                    # Spawn peluru sedikit di depan posisi player agar tidak menembus tembok dari dalam badan
+                    sx = data.get("x", p["x"]) + dx * 25
+                    sy = data.get("y", p["y"]) + dy * 25
+                    
                     valid_shot = True
                     for obs in OBSTACLES:
                         if check_line_collision(sx, sy, 4, obs):
@@ -298,7 +303,7 @@ async def game_handler(websocket):
                     if valid_shot:
                         room["bullets"].append({
                             "x": sx, "y": sy,
-                            "dx": data.get("dx", 0), "dy": data.get("dy", 0),
+                            "dx": dx, "dy": dy,
                             "owner": player_id,
                             "owner_id": player_id,
                             "distance_traveled": 0
@@ -404,24 +409,35 @@ async def game_loop():
                                     ndx = bdx / bdist
                                     ndy = bdy / bdist
                                     p["direction"] = 'right' if abs(bdx) > abs(bdy) else ('left' if bdx < 0 else ('down' if bdy > 0 else 'up'))
-                                    room["bullets"].append({
-                                        "x": p["x"] + ndx * 20,
-                                        "y": p["y"] + ndy * 20,
-                                        "dx": ndx, "dy": ndy,
-                                        "owner": pid,
-                                        "owner_id": pid,
-                                        "distance_traveled": 0
-                                    })
+                                    
+                                    # Spawn peluru di depan bot agar tidak menembus tembok
+                                    spawn_bx = p["x"] + ndx * 25
+                                    spawn_by = p["y"] + ndy * 25
+                                    
+                                    valid_shot = True
+                                    for obs in OBSTACLES:
+                                        if check_line_collision(spawn_bx, spawn_by, 4, obs):
+                                            valid_shot = False
+                                            break
+                                            
+                                    if valid_shot:
+                                        room["bullets"].append({
+                                            "x": spawn_bx, "y": spawn_by,
+                                            "dx": ndx, "dy": ndy,
+                                            "owner": pid,
+                                            "owner_id": pid,
+                                            "distance_traveled": 0
+                                        })
 
                 # --- Update Peluru ---
                 for b in room["bullets"][:]:
                     prev_x, prev_y = b["x"], b["y"]
                     
-                    speed_multiplier = 25
+                    speed_multiplier = 15  # Diturunkan agar pergerakan peluru lebih terkontrol
                     target_bullet_x = b["x"] + b["dx"] * speed_multiplier
                     target_bullet_y = b["y"] + b["dy"] * speed_multiplier
                     
-                    sub_steps = 5
+                    sub_steps = 10  # Ditingkatkan agar pengecekan tabrakan garis semakin presisi
                     sub_dx = (target_bullet_x - prev_x) / sub_steps
                     sub_dy = (target_bullet_y - prev_y) / sub_steps
                     
@@ -434,7 +450,7 @@ async def game_loop():
                         current_sim_y += sub_dy
                         
                         for obs in OBSTACLES:
-                            if check_line_collision(current_sim_x, current_sim_y, 4, obs):
+                            if check_line_collision(current_sim_x, current_sim_y, 6, obs):
                                 hit_obstacle = True
                                 break
                         if hit_obstacle:
@@ -469,7 +485,7 @@ async def game_loop():
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
                                     # Tambahan waktu kebal 3 detik saat respawn aktif
-                                    p["invulnerable_until"] = current_time + 3.0
+                                    p["invulnerable_until"] = current_time + 8.0
                                 break
                     if hit and b in room["bullets"]:
                         room["bullets"].remove(b)
@@ -480,7 +496,16 @@ async def game_loop():
                 if len(total_players) >= 1 and not room["game_over"]:
                     if len(active_players) <= 1:
                         room["game_over"] = True
-                        room["winner"] = active_players[0]["name"] if len(active_players) == 1 else "Seri"
+                        if len(active_players) == 1:
+                            room["winner"] = f"Pemenang: {active_players[0]['name']} (Bertahan hidup)"
+                        else:
+                            # Jika semua habis nyawanya (misal mati bersamaan), urutkan berdasarkan kill terbanyak
+                            sorted_players = sorted(total_players, key=lambda x: x["kills"], reverse=True)
+                            if sorted_players:
+                                top_kill = sorted_players[0]["kills"]
+                                room["winner"] = f"Pemenang (Top Kill): {sorted_players[0]['name']} ({top_kill} Kill)"
+                            else:
+                                room["winner"] = "Seri"
 
             if room["connected_webs"]:
                 export_clients = {}

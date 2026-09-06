@@ -80,6 +80,16 @@ def create_new_room():
     }
     return code
 
+async def broadcast_to_room(room_code, message_dict):
+    if room_code in rooms:
+        data_str = json.dumps(message_dict)
+        room = rooms[room_code]
+        for ws in list(room["connected_webs"]):
+            try:
+                await ws.send(data_str)
+            except:
+                room["connected_webs"].discard(ws)
+
 async def game_handler(websocket):
     player_id = str(id(websocket))
     current_room_code = None
@@ -166,6 +176,19 @@ async def game_handler(websocket):
                 continue
             
             room = rooms[current_room_code]
+
+            # Fitur Chat Lobi
+            if msg_type == "chat_message":
+                if player_id in room["clients"]:
+                    sender_name = room["clients"][player_id]["name"]
+                    chat_text = data.get("message", "").strip()
+                    if chat_text:
+                        await broadcast_to_room(current_room_code, {
+                            "type": "chat_message",
+                            "sender": sender_name,
+                            "message": chat_text
+                        })
+                continue
 
             if msg_type == "start_game":
                 if player_id in room["clients"]:
@@ -385,7 +408,6 @@ async def main():
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
 
-    # Mendukung port dinamis dari Render (atau default ke 8765 jika di lokal)
     port = int(os.environ.get("PORT", 8765))
 
     async with websockets.serve(game_handler, "0.0.0.0", port):

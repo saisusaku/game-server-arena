@@ -8,6 +8,7 @@ import websockets
 import string
 import socket
 import threading
+from collections import deque
 
 # Struktur data per lobi (Rooms)
 rooms = {}
@@ -53,6 +54,18 @@ def check_line_collision(x, y, radius, line):
     dist_sq = (x - nearest_x)**2 + (y - nearest_y)**2
     return dist_sq < (radius**2)
 
+def is_path_clear(x1, y1, x2, y2, radius=15):
+    """Memeriksa apakah garis pandang/tembak dari (x1, y1) ke (x2, y2) terhalang tembok."""
+    steps = int(((x2 - x1)**2 + (y2 - y1)**2)**0.5 / 10) + 1
+    for i in range(steps + 1):
+        t = i / max(1, steps)
+        cx = x1 + (x2 - x1) * t
+        cy = y1 + (y2 - y1) * t
+        for obs in OBSTACLES:
+            if check_line_collision(cx, cy, radius, obs):
+                return False
+    return True
+
 def get_random_safe_spawn():
     while True:
         rx = random.randint(100, 1100)
@@ -64,6 +77,51 @@ def get_random_safe_spawn():
                 break
         if not collision:
             return rx, ry
+
+def find_path_bfs(start_x, start_y, target_x, target_y):
+    """Pencarian jalur cerdas menggunakan grid BFS agar bot bisa mengelilingi rintangan."""
+    grid_size = 40
+    start_gx = int(start_x // grid_size)
+    start_gy = int(start_y // grid_size)
+    target_gx = int(target_x // grid_size)
+    target_gy = int(target_y // grid_size)
+
+    queue = deque([(start_gx, start_gy, [])])
+    visited = {(start_gx, start_gy)}
+    
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+    best_path = []
+    found = False
+
+    for _ in range(150):  # Batasi iterasi agar performa server tetap ringan
+        if not queue:
+            break
+        cx, cy, path = queue.popleft()
+
+        if abs(cx - target_gx) <= 1 and abs(cy - target_gy) <= 1:
+            best_path = path
+            found = True
+            break
+
+        for dx, dy in directions:
+            nx, ny = cx + dx, cy + dy
+            if (nx, ny) not in visited:
+                # Validasi apakah koordinat dunia grid ini menabrak rintangan
+                world_x = nx * grid_size + grid_size / 2
+                world_y = ny * grid_size + grid_size / 2
+                
+                hit = False
+                for obs in OBSTACLES:
+                    if check_line_collision(world_x, world_y, 20, obs):
+                        hit = True
+                        break
+                
+                if not hit:
+                    visited.add((nx, ny))
+                    queue.append((nx, ny, path + [(world_x, world_y)]))
+
+    return best_path
 
 def create_new_room():
     while True:
@@ -78,7 +136,7 @@ def create_new_room():
         "winner": "",
         "connected_webs": set(),
         "use_bots": False,
-        "bot_count": 2  # Default jumlah bot
+        "bot_count": 2
     }
     return code
 
@@ -145,7 +203,7 @@ async def game_handler(websocket):
                     "lives": 5,
                     "kills": 0,
                     "role": role,
-                    "invulnerable_until": current_time + 3.0
+                    "invulnerable_until": current_time + 5.0
                 }
                 
             elif msg_type == "join_room":
@@ -170,7 +228,7 @@ async def game_handler(websocket):
                         "lives": 5,
                         "kills": 0,
                         "role": "player",
-                        "invulnerable_until": current_time + 3.0
+                        "invulnerable_until": current_time + 5.0
                     }
                 else:
                     await websocket.send(json.dumps({"type": "error", "message": "Lobi tidak ditemukan atau sudah mulai!"}))
@@ -181,7 +239,6 @@ async def game_handler(websocket):
             
             room = rooms[current_room_code]
 
-            # Toggle opsi & jumlah bot oleh host
             if msg_type == "toggle_bots":
                 first_player_id = next((pid for pid, p in room["clients"].items() if p["role"] == "player"), None)
                 if player_id == first_player_id or room["clients"].get(player_id, {}).get("role") == "admin":
@@ -226,9 +283,8 @@ async def game_handler(websocket):
                                     p["y"] = sy
                                     p["lives"] = 5
                                     p["kills"] = 0
-                                    p["invulnerable_until"] = current_time + 3.0
+                                    p["invulnerable_until"] = current_time + 5.0
 
-                            # Generate bot sejumlah pilihan host
                             if room["use_bots"]:
                                 for i in range(room["bot_count"]):
                                     bot_id = f"bot_{i}_{random.randint(1000,9999)}"
@@ -243,10 +299,9 @@ async def game_handler(websocket):
                                         "kills": 0,
                                         "role": "player",
                                         "is_bot": True,
-                                        "bot_target_x": bx,
-                                        "bot_target_y": by,
+                                        "bot_path": [],
                                         "bot_timer": 0,
-                                        "invulnerable_until": current_time + 3.0
+                                        "invulnerable_until": current_time + 5.0
                                     }
 
             elif msg_type == "update" and player_id in room["clients"]:
@@ -290,7 +345,6 @@ async def game_handler(websocket):
                     dx = data.get("dx", 0)
                     dy = data.get("dy", 0)
                     
-                    # Spawn peluru sedikit di depan posisi player agar tidak menembus tembok dari dalam badan
                     sx = data.get("x", p["x"]) + dx * 25
                     sy = data.get("y", p["y"]) + dy * 25
                     
@@ -340,104 +394,103 @@ async def game_loop():
 
         for r_code, room in list(rooms.items()):
             if room["game_started"] and not room["game_over"]:
-                # --- Logika AI Bot (Memburu Sesama Bot & Pemain) ---
+                # --- Peningkatan AI Bot (Pathfinding Cerdas & Validasi Tembak) ---
                 for pid, p in room["clients"].items():
                     if p.get("is_bot") and p["lives"] > 0:
                         p["bot_timer"] = p.get("bot_timer", 0) - 1
-                        if p["bot_timer"] <= 0:
-                            p["bot_timer"] = random.randint(25, 60)
-                            # Bot mencari target terdekat (bisa pemain atau bot lain)
-                            available_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
-                            if available_targets:
-                                chosen = random.choice(available_targets)
-                                p["bot_target_x"] = chosen["x"] + random.randint(-20, 20)
-                                p["bot_target_y"] = chosen["y"] + random.randint(-20, 20)
-                            else:
-                                p["bot_target_x"] = random.randint(150, 1050)
-                                p["bot_target_y"] = random.randint(150, 650)
-
-                        # Pergerakan mulus bot menuju target dengan dukungan sliding dinding
-                        dx = p["bot_target_x"] - p["x"]
-                        dy = p["bot_target_y"] - p["y"]
-                        dist = (dx**2 + dy**2)**0.5
                         
-                        if dist > 8:
-                            vx = (dx / dist) * 3.8
-                            vy = (dy / dist) * 3.8
-                            next_x = p["x"] + vx
-                            next_y = p["y"] + vy
+                        available_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
+                        if available_targets:
+                            # Cari target terdekat
+                            target = min(available_targets, key=lambda t: (t["x"] - p["x"])**2 + (t["y"] - p["y"])**2)
                             
-                            hit = False
-                            for obs in OBSTACLES:
-                                if check_line_collision(next_x, next_y, 18, obs):
-                                    hit = True
-                                    break
-                            
-                            if not hit:
-                                p["x"] = next_x
-                                p["y"] = next_y
-                            else:
-                                # Terapkan uji sumbu terpisah agar bot bisa sliding (geser) di sepanjang dinding/rintangan
-                                test_x = next_x
-                                test_y = p["y"]
-                                if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
-                                    p["x"] = test_x
-                                
-                                test_x = p["x"]
-                                test_y = next_y
-                                if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
-                                    p["y"] = test_y
-                                    
-                                # Cari jalur alternatif jika benar-benar terhalang
-                                p["bot_target_x"] = random.randint(150, 1050)
-                                p["bot_target_y"] = random.randint(150, 650)
-                            
-                            if abs(dx) > abs(dy):
-                                p["direction"] = 'right' if dx > 0 else 'left'
-                            else:
-                                p["direction"] = 'down' if dy > 0 else 'up'
+                            # Perbarui path BFS secara berkala atau jika path sudah habis
+                            if p["bot_timer"] <= 0 or not p.get("bot_path"):
+                                p["bot_timer"] = 35
+                                p["bot_path"] = find_path_bfs(p["x"], p["y"], target["x"], target["y"])
 
-                        # Bot agresif menembak target terdekat (pemain atau sesama bot)
-                        if random.randint(1, 25) == 1:
-                            valid_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
-                            if valid_targets:
-                                target = min(valid_targets, key=lambda t: (t["x"] - p["x"])**2 + (t["y"] - p["y"])**2)
+                            # Gerak mengikuti waypoint path BFS
+                            if p.get("bot_path"):
+                                next_wp = p["bot_path"][0]
+                                dx = next_wp[0] - p["x"]
+                                dy = next_wp[1] - p["y"]
+                                dist = (dx**2 + dy**2)**0.5
+                                
+                                if dist < 15:
+                                    p["bot_path"].pop(0)
+                                else:
+                                    vx = (dx / dist) * 3.6
+                                    vy = (dy / dist) * 3.6
+                                    
+                                    next_x = p["x"] + vx
+                                    next_y = p["y"] + vy
+                                    
+                                    hit = False
+                                    for obs in OBSTACLES:
+                                        if check_line_collision(next_x, next_y, 18, obs):
+                                            hit = True
+                                            break
+                                            
+                                    if not hit:
+                                        p["x"] = next_x
+                                        p["y"] = next_y
+                                    else:
+                                        # Geser dinding (sliding)
+                                        test_x = next_x
+                                        test_y = p["y"]
+                                        if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
+                                            p["x"] = test_x
+                                        test_x = p["x"]
+                                        test_y = next_y
+                                        if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
+                                            p["y"] = test_y
+                                            
+                                    if abs(dx) > abs(dy):
+                                        p["direction"] = 'right' if dx > 0 else 'left'
+                                    else:
+                                        p["direction"] = 'down' if dy > 0 else 'up'
+
+                            # Logika Tembak Cerdas: Hanya menembak jika jalur pandang TIDAK terhalang tembok
+                            if random.randint(1, 20) == 1:
                                 bdx = target["x"] - p["x"]
                                 bdy = target["y"] - p["y"]
                                 bdist = (bdx**2 + bdy**2)**0.5
-                                if bdist > 0 and bdist < 500:
+                                
+                                if 0 < bdist < 450:
                                     ndx = bdx / bdist
                                     ndy = bdy / bdist
-                                    p["direction"] = 'right' if abs(bdx) > abs(bdy) else ('left' if bdx < 0 else ('down' if bdy > 0 else 'up'))
                                     
-                                    # Spawn peluru di depan bot agar tidak menembus tembok
-                                    spawn_bx = p["x"] + ndx * 25
-                                    spawn_by = p["y"] + ndy * 25
-                                    
-                                    valid_shot = True
-                                    for obs in OBSTACLES:
-                                        if check_line_collision(spawn_bx, spawn_by, 4, obs):
-                                            valid_shot = False
-                                            break
-                                            
-                                    if valid_shot:
-                                        room["bullets"].append({
-                                            "x": spawn_bx, "y": spawn_by,
-                                            "dx": ndx, "dy": ndy,
-                                            "owner": pid,
-                                            "owner_id": pid,
-                                            "distance_traveled": 0
-                                        })
+                                    # Cek apakah garis tembak ke target terhalang tembok
+                                    if is_path_clear(p["x"], p["y"], target["x"], target["y"]):
+                                        p["direction"] = 'right' if abs(bdx) > abs(bdy) else ('left' if bdx < 0 else ('down' if bdy > 0 else 'up'))
+                                        
+                                        spawn_bx = p["x"] + ndx * 25
+                                        spawn_by = p["y"] + ndy * 25
+                                        
+                                        valid_shot = True
+                                        for obs in OBSTACLES:
+                                            if check_line_collision(spawn_bx, spawn_by, 4, obs):
+                                                valid_shot = False
+                                                break
+                                                
+                                        if valid_shot:
+                                            room["bullets"].append({
+                                                "x": spawn_bx, "y": spawn_by,
+                                                "dx": ndx, "dy": ndy,
+                                                "owner": pid,
+                                                "owner_id": pid,
+                                                "distance_traveled": 0
+                                            })
 
                 # --- Update Peluru ---
                 for b in room["bullets"][:]:
                     prev_x, prev_y = b["x"], b["y"]
                     
-                    speed_multiplier = 15  # Diturunkan agar pergerakan peluru lebih terkontrol
+                    speed_multiplier = 15
                     target_bullet_x = b["x"] + b["dx"] * speed_multiplier
                     target_bullet_y = b["y"] + b["dy"] * speed_multiplier
                     
-                    sub_steps = 10  # Ditingkatkan agar pengecekan tabrakan garis semakin presisi
+                    sub_steps = 10
                     sub_dx = (target_bullet_x - prev_x) / sub_steps
                     sub_dy = (target_bullet_y - prev_y) / sub_steps
                     
@@ -484,8 +537,7 @@ async def game_loop():
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
-                                    # Tambahan waktu kebal 3 detik saat respawn aktif
-                                    p["invulnerable_until"] = current_time + 8.0
+                                    p["invulnerable_until"] = current_time + 5.0
                                 break
                     if hit and b in room["bullets"]:
                         room["bullets"].remove(b)
@@ -499,7 +551,6 @@ async def game_loop():
                         if len(active_players) == 1:
                             room["winner"] = f"Pemenang: {active_players[0]['name']} (Bertahan hidup)"
                         else:
-                            # Jika semua habis nyawanya (misal mati bersamaan), urutkan berdasarkan kill terbanyak
                             sorted_players = sorted(total_players, key=lambda x: x["kills"], reverse=True)
                             if sorted_players:
                                 top_kill = sorted_players[0]["kills"]

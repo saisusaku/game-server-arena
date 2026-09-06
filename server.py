@@ -371,10 +371,8 @@ async def game_loop():
                             
                             if abs(dx) > abs(dy):
                                 p["direction"] = 'right' if dx > 0 else 'left'
-                                p["angle"] = 0 if dx > 0 else Math.PI if 'Math' in globals() else 3.14
                             else:
                                 p["direction"] = 'down' if dy > 0 else 'up'
-                                p["angle"] = 1.57 if dy > 0 else -1.57
 
                         # Bot menembak secara berkala jika dekat dengan pemain
                         if random.randint(1, 40) == 1:

@@ -77,7 +77,8 @@ def create_new_room():
         "game_over": False,
         "winner": "",
         "connected_webs": set(),
-        "use_bots": False  # Status apakah lobi ini mengaktifkan bot
+        "use_bots": False,
+        "bot_count": 2  # Default jumlah bot
     }
     return code
 
@@ -113,7 +114,8 @@ async def game_handler(websocket):
                             "id": r_code,
                             "name": f"Lobi ({r_code})",
                             "playersCount": p_count,
-                            "use_bots": r_data["use_bots"]
+                            "use_bots": r_data["use_bots"],
+                            "bot_count": r_data["bot_count"]
                         })
                 await websocket.send(json.dumps({
                     "type": "room_list",
@@ -179,11 +181,12 @@ async def game_handler(websocket):
             
             room = rooms[current_room_code]
 
-            # Toggle opsi bot oleh host
+            # Toggle opsi & jumlah bot oleh host
             if msg_type == "toggle_bots":
                 first_player_id = next((pid for pid, p in room["clients"].items() if p["role"] == "player"), None)
                 if player_id == first_player_id or room["clients"].get(player_id, {}).get("role") == "admin":
                     room["use_bots"] = data.get("use_bots", False)
+                    room["bot_count"] = int(data.get("bot_count", 2))
                 continue
 
             if msg_type == "chat_message":
@@ -213,7 +216,6 @@ async def game_handler(websocket):
                             room["winner"] = ""
                             room["bullets"].clear()
                             
-                            # Hapus bot lama jika ada, lalu generate ulang jika opsi bot aktif
                             room["clients"] = {pid: p for pid, p in room["clients"].items() if not p.get("is_bot")}
                             
                             current_time = asyncio.get_running_loop().time()
@@ -226,9 +228,9 @@ async def game_handler(websocket):
                                     p["kills"] = 0
                                     p["invulnerable_until"] = current_time + 3.0
 
-                            # Tambahkan 2 Bot jika opsi bot diaktifkan oleh host
+                            # Generate bot sejumlah pilihan host
                             if room["use_bots"]:
-                                for i in range(2):
+                                for i in range(room["bot_count"]):
                                     bot_id = f"bot_{i}_{random.randint(1000,9999)}"
                                     bx, by = get_random_safe_spawn()
                                     room["clients"][bot_id] = {
@@ -236,7 +238,7 @@ async def game_handler(websocket):
                                         "x": bx, "y": by,
                                         "angle": 0,
                                         "direction": "up",
-                                        "color": "#ef4444",
+                                        "color": f"hsl({random.randint(0, 360)}, 80%, 55%)",
                                         "lives": 5,
                                         "kills": 0,
                                         "role": "player",
@@ -333,30 +335,30 @@ async def game_loop():
 
         for r_code, room in list(rooms.items()):
             if room["game_started"] and not room["game_over"]:
-                # --- Logika AI Bot ---
+                # --- Logika AI Bot (Memburu Sesama Bot & Pemain) ---
                 for pid, p in room["clients"].items():
                     if p.get("is_bot") and p["lives"] > 0:
                         p["bot_timer"] = p.get("bot_timer", 0) - 1
                         if p["bot_timer"] <= 0:
-                            p["bot_timer"] = random.randint(40, 90)
-                            # Cari target pemain manusia terdekat
-                            targets = [cp for cpid, cp in room["clients"].items() if cp["role"] == "player" and not cp.get("is_bot") and cp["lives"] > 0]
-                            if targets:
-                                chosen = random.choice(targets)
-                                p["bot_target_x"] = chosen["x"] + random.randint(-40, 40)
-                                p["bot_target_y"] = chosen["y"] + random.randint(-40, 40)
+                            p["bot_timer"] = random.randint(25, 60)
+                            # Bot mencari target terdekat (bisa pemain atau bot lain)
+                            available_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
+                            if available_targets:
+                                chosen = random.choice(available_targets)
+                                p["bot_target_x"] = chosen["x"] + random.randint(-20, 20)
+                                p["bot_target_y"] = chosen["y"] + random.randint(-20, 20)
                             else:
                                 p["bot_target_x"] = random.randint(150, 1050)
                                 p["bot_target_y"] = random.randint(150, 650)
 
-                        # Gerakkan bot menuju target
+                        # Pergerakan mulus bot menuju target
                         dx = p["bot_target_x"] - p["x"]
                         dy = p["bot_target_y"] - p["y"]
                         dist = (dx**2 + dy**2)**0.5
                         
-                        if dist > 10:
-                            vx = (dx / dist) * 3.5
-                            vy = (dy / dist) * 3.5
+                        if dist > 8:
+                            vx = (dx / dist) * 3.8
+                            vy = (dy / dist) * 3.8
                             next_x = p["x"] + vx
                             next_y = p["y"] + vy
                             
@@ -368,23 +370,28 @@ async def game_loop():
                             if not hit:
                                 p["x"] = next_x
                                 p["y"] = next_y
+                            else:
+                                # Cari jalur alternatif jika menabrak rintangan
+                                p["bot_target_x"] = random.randint(150, 1050)
+                                p["bot_target_y"] = random.randint(150, 650)
                             
                             if abs(dx) > abs(dy):
                                 p["direction"] = 'right' if dx > 0 else 'left'
                             else:
                                 p["direction"] = 'down' if dy > 0 else 'up'
 
-                        # Bot menembak secara berkala jika dekat dengan pemain
-                        if random.randint(1, 40) == 1:
-                            targets = [cp for cpid, cp in room["clients"].items() if cp["role"] == "player" and not cp.get("is_bot") and cp["lives"] > 0]
-                            if targets:
-                                target = targets[0]
+                        # Bot agresif menembak target terdekat (pemain atau sesama bot)
+                        if random.randint(1, 25) == 1:
+                            valid_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
+                            if valid_targets:
+                                target = min(valid_targets, key=lambda t: (t["x"] - p["x"])**2 + (t["y"] - p["y"])**2)
                                 bdx = target["x"] - p["x"]
                                 bdy = target["y"] - p["y"]
                                 bdist = (bdx**2 + bdy**2)**0.5
-                                if bdist > 0 and bdist < 400:
+                                if bdist > 0 and bdist < 500:
                                     ndx = bdx / bdist
                                     ndy = bdy / bdist
+                                    p["direction"] = 'right' if abs(bdx) > abs(bdy) else ('left' if bdx < 0 else ('down' if bdy > 0 else 'up'))
                                     room["bullets"].append({
                                         "x": p["x"] + ndx * 20,
                                         "y": p["y"] + ndy * 20,
@@ -449,6 +456,7 @@ async def game_loop():
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
+                                    # Tambahan waktu kebal 3 detik saat respawn aktif
                                     p["invulnerable_until"] = current_time + 3.0
                                 break
                     if hit and b in room["bullets"]:
@@ -478,7 +486,8 @@ async def game_loop():
                     "clients": export_clients,
                     "bullets": room["bullets"],
                     "obstacles": OBSTACLES,
-                    "use_bots": room["use_bots"]
+                    "use_bots": room["use_bots"],
+                    "bot_count": room["bot_count"]
                 })
                 
                 for ws in list(room["connected_webs"]):

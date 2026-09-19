@@ -257,14 +257,9 @@ async def game_handler(websocket):
                         p["x"] = target_x
                         p["y"] = target_y
                     else:
-                        test_x = target_x
-                        test_y = current_y
-                        if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
-                            p["x"] = test_x
-                        test_x = p["x"]
-                        test_y = target_y
-                        if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
-                            p["y"] = test_y
+                        # --- Efek Pantulan Mundur (Rebound) pada Rintangan ---
+                        p["x"] = current_x - (target_x - current_x) * 0.5
+                        p["y"] = current_y - (target_y - current_y) * 0.5
 
                     p["angle"] = data.get("angle", 0)
                     p["direction"] = data.get("direction", p.get("direction", "up"))
@@ -323,6 +318,29 @@ async def game_loop():
 
         for r_code, room in list(rooms.items()):
             if room["game_started"] and not room["game_over"]:
+                
+                # --- Cek Tabrakan Antar Pesawat (Player-to-Player Bounce) ---
+                active_clients = [(pid, p) for pid, p in room["clients"].items() if p["lives"] > 0 and current_time >= p.get("respawn_delay_until", 0)]
+                for i in range(len(active_clients)):
+                    id1, p1 = active_clients[i]
+                    for j in range(i + 1, len(active_clients)):
+                        id2, p2 = active_clients[j]
+                        
+                        dist = ((p1["x"] - p2["x"])**2 + (p1["y"] - p2["y"])**2)**0.5
+                        collision_radius = 36 # 18 (radius p1) + 18 (radius p2)
+                        
+                        if dist < collision_radius and dist > 0:
+                            nx = (p2["x"] - p1["x"]) / dist
+                            ny = (p2["y"] - p1["y"]) / dist
+                            overlap = collision_radius - dist
+                            
+                            if not p1.get("is_bot"):
+                                p1["x"] -= nx * (overlap / 2)
+                                p1["y"] -= ny * (overlap / 2)
+                            if not p2.get("is_bot"):
+                                p2["x"] += nx * (overlap / 2)
+                                p2["y"] += ny * (overlap / 2)
+
                 # --- Logika AI Bot ---
                 for pid, p in room["clients"].items():
                     if p.get("is_bot") and p["lives"] > 0:
@@ -361,14 +379,9 @@ async def game_loop():
                                 p["x"] = next_x
                                 p["y"] = next_y
                             else:
-                                test_x = next_x
-                                test_y = p["y"]
-                                if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
-                                    p["x"] = test_x
-                                test_x = p["x"]
-                                test_y = next_y
-                                if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
-                                    p["y"] = test_y
+                                # Pantulan bot pada rintangan
+                                p["x"] = p["x"] - vx * 0.5
+                                p["y"] = p["y"] - vy * 0.5
                                 p["bot_target_x"] = random.randint(150, 1050)
                                 p["bot_target_y"] = random.randint(150, 650)
                             
@@ -454,7 +467,6 @@ async def game_loop():
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
-                                    # 5 detik pertama respawn delay (tidak terlihat), dilanjut 3 detik kebal (blinking)
                                     p["respawn_delay_until"] = current_time + 5.0
                                     p["invulnerable_until"] = current_time + 5.0 + 3.0
                                 break

@@ -9,7 +9,6 @@ import string
 import socket
 import threading
 
-# Struktur data per lobi (Rooms)
 rooms = {}
 
 OBSTACLES = [
@@ -43,13 +42,10 @@ def check_line_collision(x, y, radius, line):
     length_sq = dx*dx + dy*dy
     if length_sq == 0:
         return ((x - x1)**2 + (y - y1)**2)**0.5 < radius
-    
     t = ((x - x1) * dx + (y - y1) * dy) / length_sq
     t = max(0, min(1, t))
-    
     nearest_x = x1 + t * dx
     nearest_y = y1 + t * dy
-    
     dist_sq = (x - nearest_x)**2 + (y - nearest_y)**2
     return dist_sq < (radius**2)
 
@@ -78,7 +74,7 @@ def create_new_room():
         "winner": "",
         "connected_webs": set(),
         "use_bots": False,
-        "bot_count": 2  # Default jumlah bot
+        "bot_count": 2
     }
     return code
 
@@ -117,10 +113,7 @@ async def game_handler(websocket):
                             "use_bots": r_data["use_bots"],
                             "bot_count": r_data["bot_count"]
                         })
-                await websocket.send(json.dumps({
-                    "type": "room_list",
-                    "rooms": room_list
-                }))
+                await websocket.send(json.dumps({"type": "room_list", "rooms": room_list}))
                 continue
             
             if msg_type == "login":
@@ -139,11 +132,8 @@ async def game_handler(websocket):
                 room["clients"][player_id] = {
                     "name": name,
                     "x": spawn_x, "y": spawn_y,
-                    "angle": 0,
-                    "direction": "up",
-                    "color": color,
-                    "lives": 5,
-                    "kills": 0,
+                    "angle": 0, "direction": "up",
+                    "color": color, "lives": 5, "kills": 0,
                     "role": role,
                     "invulnerable_until": current_time + 3.0
                 }
@@ -164,11 +154,8 @@ async def game_handler(websocket):
                     room["clients"][player_id] = {
                         "name": name,
                         "x": spawn_x, "y": spawn_y,
-                        "angle": 0,
-                        "direction": "up",
-                        "color": color,
-                        "lives": 5,
-                        "kills": 0,
+                        "angle": 0, "direction": "up",
+                        "color": color, "lives": 5, "kills": 0,
                         "role": "player",
                         "invulnerable_until": current_time + 3.0
                     }
@@ -181,7 +168,6 @@ async def game_handler(websocket):
             
             room = rooms[current_room_code]
 
-            # Toggle opsi & jumlah bot oleh host
             if msg_type == "toggle_bots":
                 first_player_id = next((pid for pid, p in room["clients"].items() if p["role"] == "player"), None)
                 if player_id == first_player_id or room["clients"].get(player_id, {}).get("role") == "admin":
@@ -195,9 +181,7 @@ async def game_handler(websocket):
                     chat_text = data.get("message", "").strip()
                     if chat_text:
                         await broadcast_to_room(current_room_code, {
-                            "type": "chat_message",
-                            "sender": sender_name,
-                            "message": chat_text
+                            "type": "chat_message", "sender": sender_name, "message": chat_text
                         })
                 continue
 
@@ -217,8 +201,8 @@ async def game_handler(websocket):
                             room["bullets"].clear()
                             
                             room["clients"] = {pid: p for pid, p in room["clients"].items() if not p.get("is_bot")}
-                            
                             current_time = asyncio.get_running_loop().time()
+                            
                             for pid, p in room["clients"].items():
                                 if p["role"] == "player":
                                     sx, sy = get_random_safe_spawn()
@@ -228,7 +212,6 @@ async def game_handler(websocket):
                                     p["kills"] = 0
                                     p["invulnerable_until"] = current_time + 3.0
 
-                            # Generate bot sejumlah pilihan host
                             if room["use_bots"]:
                                 for i in range(room["bot_count"]):
                                     bot_id = f"bot_{i}_{random.randint(1000,9999)}"
@@ -236,15 +219,11 @@ async def game_handler(websocket):
                                     room["clients"][bot_id] = {
                                         "name": f"AI Bot {i+1}",
                                         "x": bx, "y": by,
-                                        "angle": 0,
-                                        "direction": "up",
+                                        "angle": 0, "direction": "up",
                                         "color": f"hsl({random.randint(0, 360)}, 80%, 55%)",
-                                        "lives": 5,
-                                        "kills": 0,
-                                        "role": "player",
-                                        "is_bot": True,
-                                        "bot_target_x": bx,
-                                        "bot_target_y": by,
+                                        "lives": 5, "kills": 0,
+                                        "role": "player", "is_bot": True,
+                                        "bot_target_x": bx, "bot_target_y": by,
                                         "bot_timer": 0,
                                         "invulnerable_until": current_time + 3.0
                                     }
@@ -275,7 +254,6 @@ async def game_handler(websocket):
                         test_y = current_y
                         if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
                             p["x"] = test_x
-                        
                         test_x = p["x"]
                         test_y = target_y
                         if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
@@ -289,8 +267,6 @@ async def game_handler(websocket):
                 if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player":
                     dx = data.get("dx", 0)
                     dy = data.get("dy", 0)
-                    
-                    # Spawn peluru sedikit di depan posisi player agar tidak menembus tembok dari dalam badan
                     sx = data.get("x", p["x"]) + dx * 25
                     sy = data.get("y", p["y"]) + dy * 25
                     
@@ -302,11 +278,8 @@ async def game_handler(websocket):
                     
                     if valid_shot:
                         room["bullets"].append({
-                            "x": sx, "y": sy,
-                            "dx": dx, "dy": dy,
-                            "owner": player_id,
-                            "owner_id": player_id,
-                            "distance_traveled": 0
+                            "x": sx, "y": sy, "dx": dx, "dy": dy,
+                            "owner": player_id, "owner_id": player_id, "distance_traveled": 0
                         })
             
             elif msg_type == "reset_game":
@@ -330,7 +303,6 @@ async def game_handler(websocket):
                 room["connected_webs"].remove(websocket)
             if player_id in room["clients"]:
                 del room["clients"][player_id]
-            
             if not room["clients"]:
                 del rooms[current_room_code]
 
@@ -340,13 +312,11 @@ async def game_loop():
 
         for r_code, room in list(rooms.items()):
             if room["game_started"] and not room["game_over"]:
-                # --- Logika AI Bot (Memburu Sesama Bot & Pemain) ---
                 for pid, p in room["clients"].items():
                     if p.get("is_bot") and p["lives"] > 0:
                         p["bot_timer"] = p.get("bot_timer", 0) - 1
                         if p["bot_timer"] <= 0:
                             p["bot_timer"] = random.randint(25, 60)
-                            # Bot mencari target terdekat (bisa pemain atau bot lain)
                             available_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
                             if available_targets:
                                 chosen = random.choice(available_targets)
@@ -356,7 +326,6 @@ async def game_loop():
                                 p["bot_target_x"] = random.randint(150, 1050)
                                 p["bot_target_y"] = random.randint(150, 650)
 
-                        # Pergerakan mulus bot menuju target dengan dukungan sliding dinding
                         dx = p["bot_target_x"] - p["x"]
                         dy = p["bot_target_y"] - p["y"]
                         dist = (dx**2 + dy**2)**0.5
@@ -377,18 +346,14 @@ async def game_loop():
                                 p["x"] = next_x
                                 p["y"] = next_y
                             else:
-                                # Terapkan uji sumbu terpisah agar bot bisa sliding (geser) di sepanjang dinding/rintangan
                                 test_x = next_x
                                 test_y = p["y"]
                                 if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
                                     p["x"] = test_x
-                                
                                 test_x = p["x"]
                                 test_y = next_y
                                 if not any(check_line_collision(test_x, test_y, 18, obs) for obs in OBSTACLES):
                                     p["y"] = test_y
-                                    
-                                # Cari jalur alternatif jika benar-benar terhalang
                                 p["bot_target_x"] = random.randint(150, 1050)
                                 p["bot_target_y"] = random.randint(150, 650)
                             
@@ -397,7 +362,6 @@ async def game_loop():
                             else:
                                 p["direction"] = 'down' if dy > 0 else 'up'
 
-                        # Bot agresif menembak target terdekat (pemain atau sesama bot)
                         if random.randint(1, 25) == 1:
                             valid_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
                             if valid_targets:
@@ -409,8 +373,6 @@ async def game_loop():
                                     ndx = bdx / bdist
                                     ndy = bdy / bdist
                                     p["direction"] = 'right' if abs(bdx) > abs(bdy) else ('left' if bdx < 0 else ('down' if bdy > 0 else 'up'))
-                                    
-                                    # Spawn peluru di depan bot agar tidak menembus tembok
                                     spawn_bx = p["x"] + ndx * 25
                                     spawn_by = p["y"] + ndy * 25
                                     
@@ -422,22 +384,17 @@ async def game_loop():
                                             
                                     if valid_shot:
                                         room["bullets"].append({
-                                            "x": spawn_bx, "y": spawn_by,
-                                            "dx": ndx, "dy": ndy,
-                                            "owner": pid,
-                                            "owner_id": pid,
-                                            "distance_traveled": 0
+                                            "x": spawn_bx, "y": spawn_by, "dx": ndx, "dy": ndy,
+                                            "owner": pid, "owner_id": pid, "distance_traveled": 0
                                         })
 
-                # --- Update Peluru ---
                 for b in room["bullets"][:]:
                     prev_x, prev_y = b["x"], b["y"]
-                    
-                    speed_multiplier = 15  # Diturunkan agar pergerakan peluru lebih terkontrol
+                    speed_multiplier = 15
                     target_bullet_x = b["x"] + b["dx"] * speed_multiplier
                     target_bullet_y = b["y"] + b["dy"] * speed_multiplier
                     
-                    sub_steps = 10  # Ditingkatkan agar pengecekan tabrakan garis semakin presisi
+                    sub_steps = 10
                     sub_dx = (target_bullet_x - prev_x) / sub_steps
                     sub_dy = (target_bullet_y - prev_y) / sub_steps
                     
@@ -448,7 +405,6 @@ async def game_loop():
                     for _ in range(sub_steps):
                         current_sim_x += sub_dx
                         current_sim_y += sub_dy
-                        
                         for obs in OBSTACLES:
                             if check_line_collision(current_sim_x, current_sim_y, 6, obs):
                                 hit_obstacle = True
@@ -458,7 +414,6 @@ async def game_loop():
                     
                     b["x"] = current_sim_x
                     b["y"] = current_sim_y
-                    
                     step_dist = ((b["x"] - prev_x)**2 + (b["y"] - prev_y)**2)**0.5
                     b["distance_traveled"] = b.get("distance_traveled", 0) + step_dist
                     
@@ -476,7 +431,6 @@ async def game_loop():
                             if dist < 18:
                                 p["lives"] -= 1
                                 hit = True
-                                
                                 owner_key = b.get("owner")
                                 if owner_key in room["clients"]:
                                     room["clients"][owner_key]["kills"] += 1
@@ -484,8 +438,8 @@ async def game_loop():
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
-                                    # Tambahan waktu kebal 3 detik saat respawn aktif
-                                    p["invulnerable_until"] = current_time + 8.0
+                                    # Durasi kebal & respawn di server (6 detik)
+                                    p["invulnerable_until"] = current_time + 6.0
                                 break
                     if hit and b in room["bullets"]:
                         room["bullets"].remove(b)
@@ -499,7 +453,6 @@ async def game_loop():
                         if len(active_players) == 1:
                             room["winner"] = f"Pemenang: {active_players[0]['name']} (Bertahan hidup)"
                         else:
-                            # Jika semua habis nyawanya (misal mati bersamaan), urutkan berdasarkan kill terbanyak
                             sorted_players = sorted(total_players, key=lambda x: x["kills"], reverse=True)
                             if sorted_players:
                                 top_kill = sorted_players[0]["kills"]
@@ -526,7 +479,6 @@ async def game_loop():
                     "use_bots": room["use_bots"],
                     "bot_count": room["bot_count"]
                 })
-                
                 for ws in list(room["connected_webs"]):
                     try:
                         await ws.send(state)
@@ -541,19 +493,15 @@ def run_http_server():
     handler = http.server.SimpleHTTPRequestHandler
     with socketserver.TCPServer(("0.0.0.0", 8080), handler) as httpd:
         local_ip = get_local_ip()
-        print(f"[HTTP] Web Server berjalan di:")
-        print(f"       -> Local:   http://localhost:8080")
-        print(f"       -> Network: http://{local_ip}:8080")
+        print(f"[HTTP] Web Server berjalan di: http://{local_ip}:8080")
         httpd.serve_forever()
 
 async def main():
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
-
     port = int(os.environ.get("PORT", 8765))
-
     async with websockets.serve(game_handler, "0.0.0.0", port):
-        print(f"[WS] WebSocket Server aktif di port {port} (Multi-Room)")
+        print(f"[WS] WebSocket Server aktif di port {port}")
         await game_loop()
 
 if __name__ == "__main__":

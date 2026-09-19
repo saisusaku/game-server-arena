@@ -135,7 +135,8 @@ async def game_handler(websocket):
                     "angle": 0, "direction": "up",
                     "color": color, "lives": 5, "kills": 0,
                     "role": role,
-                    "invulnerable_until": current_time + 3.0
+                    "invulnerable_until": current_time + 3.0,
+                    "respawn_delay_until": 0
                 }
                 
             elif msg_type == "join_room":
@@ -157,7 +158,8 @@ async def game_handler(websocket):
                         "angle": 0, "direction": "up",
                         "color": color, "lives": 5, "kills": 0,
                         "role": "player",
-                        "invulnerable_until": current_time + 3.0
+                        "invulnerable_until": current_time + 3.0,
+                        "respawn_delay_until": 0
                     }
                 else:
                     await websocket.send(json.dumps({"type": "error", "message": "Lobi tidak ditemukan atau sudah mulai!"}))
@@ -211,6 +213,7 @@ async def game_handler(websocket):
                                     p["lives"] = 5
                                     p["kills"] = 0
                                     p["invulnerable_until"] = current_time + 3.0
+                                    p["respawn_delay_until"] = 0
 
                             if room["use_bots"]:
                                 for i in range(room["bot_count"]):
@@ -225,12 +228,17 @@ async def game_handler(websocket):
                                         "role": "player", "is_bot": True,
                                         "bot_target_x": bx, "bot_target_y": by,
                                         "bot_timer": 0,
-                                        "invulnerable_until": current_time + 3.0
+                                        "invulnerable_until": current_time + 3.0,
+                                        "respawn_delay_until": 0
                                     }
 
             elif msg_type == "update" and player_id in room["clients"]:
                 p = room["clients"][player_id]
+                # Jika player sedang dalam masa delay respawn, abaikan update posisinya
                 if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player" and not p.get("is_bot"):
+                    if current_time < p.get("respawn_delay_until", 0):
+                        continue
+
                     target_x, target_y = data.get("x", p["x"]), data.get("y", p["y"])
                     current_x, current_y = p["x"], p["y"]
                     
@@ -265,6 +273,9 @@ async def game_handler(websocket):
             elif msg_type == "shoot" and player_id in room["clients"]:
                 p = room["clients"][player_id]
                 if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player":
+                    if current_time < p.get("respawn_delay_until", 0):
+                        continue
+
                     dx = data.get("dx", 0)
                     dy = data.get("dy", 0)
                     sx = data.get("x", p["x"]) + dx * 25
@@ -291,6 +302,7 @@ async def game_handler(websocket):
                 for pid, p in room["clients"].items():
                     p["lives"] = 5
                     p["kills"] = 0
+                    p["respawn_delay_until"] = 0
 
     except websockets.exceptions.ConnectionClosed:
         pass
@@ -312,12 +324,17 @@ async def game_loop():
 
         for r_code, room in list(rooms.items()):
             if room["game_started"] and not room["game_over"]:
+                # --- Logika AI Bot ---
                 for pid, p in room["clients"].items():
                     if p.get("is_bot") and p["lives"] > 0:
+                        # Jika bot sedang dalam masa respawn delay 5 detik, jangan gerak / serang
+                        if current_time < p.get("respawn_delay_until", 0):
+                            continue
+
                         p["bot_timer"] = p.get("bot_timer", 0) - 1
                         if p["bot_timer"] <= 0:
                             p["bot_timer"] = random.randint(25, 60)
-                            available_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
+                            available_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid and current_time >= cp.get("respawn_delay_until", 0)]
                             if available_targets:
                                 chosen = random.choice(available_targets)
                                 p["bot_target_x"] = chosen["x"] + random.randint(-20, 20)
@@ -363,7 +380,7 @@ async def game_loop():
                                 p["direction"] = 'down' if dy > 0 else 'up'
 
                         if random.randint(1, 25) == 1:
-                            valid_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid]
+                            valid_targets = [cp for cpid, cp in room["clients"].items() if cp["lives"] > 0 and cpid != pid and current_time >= cp.get("respawn_delay_until", 0)]
                             if valid_targets:
                                 target = min(valid_targets, key=lambda t: (t["x"] - p["x"])**2 + (t["y"] - p["y"])**2)
                                 bdx = target["x"] - p["x"]
@@ -388,6 +405,7 @@ async def game_loop():
                                             "owner": pid, "owner_id": pid, "distance_traveled": 0
                                         })
 
+                # --- Update Peluru ---
                 for b in room["bullets"][:]:
                     prev_x, prev_y = b["x"], b["y"]
                     speed_multiplier = 15
@@ -424,7 +442,8 @@ async def game_loop():
                     hit = False
                     for pid, p in room["clients"].items():
                         if p["lives"] > 0 and pid != b.get("owner"):
-                            if current_time < p.get("invulnerable_until", 0):
+                            # Abaikan jika target sedang invulnerable atau sedang dalam masa respawn delay
+                            if current_time < p.get("invulnerable_until", 0) or current_time < p.get("respawn_delay_until", 0):
                                 continue
 
                             dist = ((b["x"] - p["x"])**2 + ((b["y"] - p["y"]))**2)**0.5
@@ -438,8 +457,9 @@ async def game_loop():
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
-                                    # Durasi kebal & respawn di server (6 detik)
-                                    p["invulnerable_until"] = current_time + 6.0
+                                    # Atur waktu tunggu respawn selama 5 detik + waktu kebal
+                                    p["respawn_delay_until"] = current_time + 5.0
+                                    p["invulnerable_until"] = current_time + 8.0
                                 break
                     if hit and b in room["bullets"]:
                         room["bullets"].remove(b)

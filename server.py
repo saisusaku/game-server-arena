@@ -258,8 +258,8 @@ async def game_handler(websocket):
                         p["y"] = target_y
                     else:
                         # --- Efek Pantulan Mundur (Rebound) pada Rintangan ---
-                        p["x"] = current_x - (target_x - current_x) * 0.5
-                        p["y"] = current_y - (target_y - current_y) * 0.5
+                        p["x"] = current_x - (target_x - current_x) * 1.5
+                        p["y"] = current_y - (target_y - current_y) * 1.5
 
                     p["angle"] = data.get("angle", 0)
                     p["direction"] = data.get("direction", p.get("direction", "up"))

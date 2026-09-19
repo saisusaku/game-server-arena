@@ -169,6 +169,7 @@ async def game_handler(websocket):
                 continue
             
             room = rooms[current_room_code]
+            current_time = asyncio.get_running_loop().time()
 
             if msg_type == "toggle_bots":
                 first_player_id = next((pid for pid, p in room["clients"].items() if p["role"] == "player"), None)
@@ -203,7 +204,6 @@ async def game_handler(websocket):
                             room["bullets"].clear()
                             
                             room["clients"] = {pid: p for pid, p in room["clients"].items() if not p.get("is_bot")}
-                            current_time = asyncio.get_running_loop().time()
                             
                             for pid, p in room["clients"].items():
                                 if p["role"] == "player":
@@ -234,7 +234,7 @@ async def game_handler(websocket):
 
             elif msg_type == "update" and player_id in room["clients"]:
                 p = room["clients"][player_id]
-                # Jika player sedang dalam masa delay respawn, abaikan update posisinya
+                # Jika pemain sedang dalam masa respawn delay (tidak terlihat), abaikan update
                 if room["game_started"] and not room["game_over"] and p["lives"] > 0 and p["role"] == "player" and not p.get("is_bot"):
                     if current_time < p.get("respawn_delay_until", 0):
                         continue
@@ -327,7 +327,7 @@ async def game_loop():
                 # --- Logika AI Bot ---
                 for pid, p in room["clients"].items():
                     if p.get("is_bot") and p["lives"] > 0:
-                        # Jika bot sedang dalam masa respawn delay 5 detik, jangan gerak / serang
+                        # Jika bot sedang dalam masa respawn delay (5 detik), jangan bergerak atau menyerang
                         if current_time < p.get("respawn_delay_until", 0):
                             continue
 
@@ -442,7 +442,7 @@ async def game_loop():
                     hit = False
                     for pid, p in room["clients"].items():
                         if p["lives"] > 0 and pid != b.get("owner"):
-                            # Abaikan jika target sedang invulnerable atau sedang dalam masa respawn delay
+                            # Tidak bisa kena tembak jika sedang kebal atau sedang dalam masa respawn delay (tidak terlihat)
                             if current_time < p.get("invulnerable_until", 0) or current_time < p.get("respawn_delay_until", 0):
                                 continue
 
@@ -457,9 +457,9 @@ async def game_loop():
                                 if p["lives"] > 0:
                                     new_x, new_y = get_random_safe_spawn()
                                     p["x"], p["y"] = new_x, new_y
-                                    # Atur waktu tunggu respawn selama 5 detik + waktu kebal
+                                    # Atur waktu tunggu respawn 5 detik, dan masa kebal 3 detik setelah respawn selesai
                                     p["respawn_delay_until"] = current_time + 5.0
-                                    p["invulnerable_until"] = current_time + 8.0
+                                    p["invulnerable_until"] = current_time + 5.0 + 3.0
                                 break
                     if hit and b in room["bullets"]:
                         room["bullets"].remove(b)
@@ -485,6 +485,8 @@ async def game_loop():
                 for pid, p in room["clients"].items():
                     p_copy = p.copy()
                     p_copy["is_invulnerable"] = p.get("invulnerable_until", 0) > current_time
+                    # Kirim flag is_hidden tegas ke klien berdasarkan respawn_delay_until
+                    p_copy["is_hidden"] = current_time < p.get("respawn_delay_until", 0)
                     export_clients[pid] = p_copy
 
                 state = json.dumps({
